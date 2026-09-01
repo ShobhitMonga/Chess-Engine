@@ -1,0 +1,800 @@
+#include "raylib.h"
+#include <iostream>
+#include <vector>
+#include <string>
+#include <cmath>
+#include <algorithm>
+
+using namespace std;
+
+// --- Core Chess Logic ---
+
+enum class PieceColor { White, Black };
+class Piece;
+
+struct Move {
+    int fromRow, fromCol, toRow, toCol;
+    Piece* capturedPiece;
+    
+    bool isCastling;
+    bool isEnPassant;
+    bool isPromotion;
+    char promotionChar; 
+    
+    bool pieceHasMovedBefore;
+    
+    int rookFromRow, rookFromCol, rookToRow, rookToCol;
+    bool rookHasMovedBefore;
+
+    Move(int fr, int fc, int tr, int tc) {
+        fromRow = fr; fromCol = fc; toRow = tr; toCol = tc;
+        capturedPiece = nullptr;
+        isCastling = false;
+        isEnPassant = false;
+        isPromotion = false;
+        promotionChar = 'Q';
+        pieceHasMovedBefore = false;
+        rookFromRow = -1; rookFromCol = -1; rookToRow = -1; rookToCol = -1;
+        rookHasMovedBefore = false;
+    }
+};
+
+class Piece {
+public:
+    char symbol;
+    PieceColor color;
+    bool hasMoved;
+    Piece(char sym, PieceColor col) : symbol(sym), color(col), hasMoved(false) {}
+    virtual ~Piece() = default;
+    virtual bool isValidMove(int fromRow, int fromCol, int toRow, int toCol, Piece* board[8][8]) = 0;
+};
+
+class Pawn : public Piece {
+public:
+    Pawn(PieceColor col) : Piece('P', col) {}
+    bool isValidMove(int fromRow, int fromCol, int toRow, int toCol, Piece* board[8][8]) override {
+        int direction = (color == PieceColor::White) ? -1 : 1; 
+        if (fromCol == toCol) {
+            if (toRow == fromRow + direction && board[toRow][toCol] == nullptr) return true;
+            int startRow = (color == PieceColor::White) ? 6 : 1;
+            if (fromRow == startRow && toRow == fromRow + (direction * 2) && 
+                board[fromRow + direction][fromCol] == nullptr && board[toRow][toCol] == nullptr) return true;
+        } else if (abs(toCol - fromCol) == 1 && toRow == fromRow + direction) {
+            return true; 
+        }
+        return false;
+    }
+};
+
+class Knight : public Piece {
+public:
+    Knight(PieceColor col) : Piece('N', col) {}
+    bool isValidMove(int fromRow, int fromCol, int toRow, int toCol, Piece* board[8][8]) override {
+        int rowDiff = abs(toRow - fromRow);
+        int colDiff = abs(toCol - fromCol);
+        return (rowDiff == 2 && colDiff == 1) || (rowDiff == 1 && colDiff == 2);
+    }
+};
+
+class King : public Piece {
+public:
+    King(PieceColor col) : Piece('K', col) {}
+    bool isValidMove(int fromRow, int fromCol, int toRow, int toCol, Piece* board[8][8]) override {
+        int rowDiff = abs(toRow - fromRow);
+        int colDiff = abs(toCol - fromCol);
+        return (rowDiff <= 1 && colDiff <= 1) && !(rowDiff == 0 && colDiff == 0);
+    }
+};
+
+class Rook : public Piece {
+public:
+    Rook(PieceColor col) : Piece('R', col) {}
+    bool isValidMove(int fromRow, int fromCol, int toRow, int toCol, Piece* board[8][8]) override {
+        if (fromRow != toRow && fromCol != toCol) return false;
+        int rowDir = (toRow > fromRow) ? 1 : ((toRow < fromRow) ? -1 : 0);
+        int colDir = (toCol > fromCol) ? 1 : ((toCol < fromCol) ? -1 : 0);
+        int currentRow = fromRow + rowDir;
+        int currentCol = fromCol + colDir;
+        while (currentRow != toRow || currentCol != toCol) {
+            if (board[currentRow][currentCol] != nullptr) return false; 
+            currentRow += rowDir; currentCol += colDir;
+        }
+        return true;
+    }
+};
+
+class Bishop : public Piece {
+public:
+    Bishop(PieceColor col) : Piece('B', col) {}
+    bool isValidMove(int fromRow, int fromCol, int toRow, int toCol, Piece* board[8][8]) override {
+        if (abs(toRow - fromRow) != abs(toCol - fromCol)) return false; 
+        int rowDir = (toRow > fromRow) ? 1 : -1;
+        int colDir = (toCol > fromCol) ? 1 : -1;
+        int currentRow = fromRow + rowDir;
+        int currentCol = fromCol + colDir;
+        while (currentRow != toRow && currentCol != toCol) {
+            if (board[currentRow][currentCol] != nullptr) return false; 
+            currentRow += rowDir; currentCol += colDir;
+        }
+        return true;
+    }
+};
+
+class Queen : public Piece {
+public:
+    Queen(PieceColor col) : Piece('Q', col) {}
+    bool isValidMove(int fromRow, int fromCol, int toRow, int toCol, Piece* board[8][8]) override {
+        bool straight = (fromRow == toRow || fromCol == toCol);
+        bool diagonal = (abs(toRow - fromRow) == abs(toCol - fromCol));
+        if (!straight && !diagonal) return false;
+        int rowDir = (toRow > fromRow) ? 1 : ((toRow < fromRow) ? -1 : 0);
+        int colDir = (toCol > fromCol) ? 1 : ((toCol < fromCol) ? -1 : 0);
+        int currentRow = fromRow + rowDir;
+        int currentCol = fromCol + colDir;
+        while (currentRow != toRow || currentCol != toCol) {
+            if (board[currentRow][currentCol] != nullptr) return false; 
+            currentRow += rowDir; currentCol += colDir;
+        }
+        return true;
+    }
+};
+
+enum class GameState { Ongoing, WhiteWins, BlackWins, Draw };
+
+class ChessBoard {
+public:
+    Piece* board[8][8];
+    bool whiteTurn;
+    GameState state;
+    vector<Move> moveHistory;
+    vector<Piece*> capturedPieces;
+
+    ChessBoard() {
+        for (int i = 0; i < 8; ++i)
+            for (int j = 0; j < 8; ++j)
+                board[i][j] = nullptr;
+        
+        board[0][0] = new Rook(PieceColor::Black); board[0][1] = new Knight(PieceColor::Black);
+        board[0][2] = new Bishop(PieceColor::Black); board[0][3] = new Queen(PieceColor::Black);
+        board[0][4] = new King(PieceColor::Black); board[0][5] = new Bishop(PieceColor::Black);
+        board[0][6] = new Knight(PieceColor::Black); board[0][7] = new Rook(PieceColor::Black);
+        for(int i = 0; i < 8; i++) board[1][i] = new Pawn(PieceColor::Black);
+
+        board[7][0] = new Rook(PieceColor::White); board[7][1] = new Knight(PieceColor::White);
+        board[7][2] = new Bishop(PieceColor::White); board[7][3] = new Queen(PieceColor::White);
+        board[7][4] = new King(PieceColor::White); board[7][5] = new Bishop(PieceColor::White);
+        board[7][6] = new Knight(PieceColor::White); board[7][7] = new Rook(PieceColor::White);
+        for(int i = 0; i < 8; i++) board[6][i] = new Pawn(PieceColor::White);
+        
+        whiteTurn = true;
+        state = GameState::Ongoing;
+    }
+
+    ~ChessBoard() {
+        for (int i = 0; i < 8; ++i)
+            for (int j = 0; j < 8; ++j)
+                if (board[i][j] != nullptr) delete board[i][j];
+        for (Piece* p : capturedPieces) delete p;
+    }
+
+    bool isSquareAttacked(int r, int c, PieceColor attackerColor) {
+        for (int i = 0; i < 8; ++i) {
+            for (int j = 0; j < 8; ++j) {
+                Piece* p = board[i][j];
+                if (p != nullptr && p->color == attackerColor) {
+                    if (p->symbol == 'P' || p->symbol == 'p') {
+                        int dir = (attackerColor == PieceColor::White) ? -1 : 1;
+                        if (r == i + dir && abs(c - j) == 1) return true;
+                    } else {
+                        if (p->isValidMove(i, j, r, c, board)) return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    bool isInCheck(PieceColor kingColor) {
+        int kingRow = -1, kingCol = -1;
+        for (int i = 0; i < 8; ++i) {
+            for (int j = 0; j < 8; ++j) {
+                if (board[i][j] != nullptr && board[i][j]->color == kingColor && 
+                    (board[i][j]->symbol == 'K' || board[i][j]->symbol == 'k')) {
+                    kingRow = i; kingCol = j;
+                    break;
+                }
+            }
+        }
+        if (kingRow == -1) return false; // Should never happen unless testing
+        PieceColor attackerColor = (kingColor == PieceColor::White) ? PieceColor::Black : PieceColor::White;
+        return isSquareAttacked(kingRow, kingCol, attackerColor);
+    }
+
+    void makeMove(Move& move) {
+        Piece* p = board[move.fromRow][move.fromCol];
+        move.pieceHasMovedBefore = p->hasMoved;
+        p->hasMoved = true;
+
+        if (move.isEnPassant) {
+            move.capturedPiece = board[move.fromRow][move.toCol];
+            board[move.fromRow][move.toCol] = nullptr;
+        } else {
+            move.capturedPiece = board[move.toRow][move.toCol];
+        }
+
+        board[move.toRow][move.toCol] = p;
+        board[move.fromRow][move.fromCol] = nullptr;
+
+        if (move.isCastling) {
+            Piece* rook = board[move.rookFromRow][move.rookFromCol];
+            move.rookHasMovedBefore = rook->hasMoved;
+            rook->hasMoved = true;
+            board[move.rookToRow][move.rookToCol] = rook;
+            board[move.rookFromRow][move.rookFromCol] = nullptr;
+        }
+
+        if (move.isPromotion) {
+            // Memory leak fixed in undoMove logic or vector tracking for real moves
+            if (move.promotionChar == 'Q') board[move.toRow][move.toCol] = new Queen(p->color);
+            else if (move.promotionChar == 'R') board[move.toRow][move.toCol] = new Rook(p->color);
+            else if (move.promotionChar == 'B') board[move.toRow][move.toCol] = new Bishop(p->color);
+            else if (move.promotionChar == 'N') board[move.toRow][move.toCol] = new Knight(p->color);
+        }
+
+        whiteTurn = !whiteTurn;
+    }
+
+    void undoMove(const Move& move) {
+        Piece* p = board[move.toRow][move.toCol];
+        
+        if (move.isPromotion) {
+            delete p;
+            p = new Pawn(whiteTurn ? PieceColor::Black : PieceColor::White); // Undo is reverse color
+            board[move.toRow][move.toCol] = p;
+        }
+
+        p->hasMoved = move.pieceHasMovedBefore;
+        board[move.fromRow][move.fromCol] = p;
+
+        if (move.isEnPassant) {
+            board[move.toRow][move.toCol] = nullptr;
+            board[move.fromRow][move.toCol] = move.capturedPiece;
+        } else {
+            board[move.toRow][move.toCol] = move.capturedPiece;
+        }
+
+        if (move.isCastling) {
+            Piece* rook = board[move.rookToRow][move.rookToCol];
+            rook->hasMoved = move.rookHasMovedBefore;
+            board[move.rookFromRow][move.rookFromCol] = rook;
+            board[move.rookToRow][move.rookToCol] = nullptr;
+        }
+
+        whiteTurn = !whiteTurn;
+    }
+
+    void executeRealMove(const Move& move) {
+        moveHistory.push_back(move);
+        makeMove(moveHistory.back());
+        if (moveHistory.back().capturedPiece) {
+            capturedPieces.push_back(moveHistory.back().capturedPiece);
+        }
+        if (moveHistory.back().isPromotion) {
+            capturedPieces.push_back(board[moveHistory.back().toRow][moveHistory.back().toCol]); 
+        }
+        
+        // Update Game State
+        PieceColor nextColor = whiteTurn ? PieceColor::White : PieceColor::Black;
+        vector<Move> validMoves = generateAllLegalMoves(nextColor);
+        if (validMoves.empty()) {
+            if (isInCheck(nextColor)) {
+                state = whiteTurn ? GameState::BlackWins : GameState::WhiteWins;
+            } else {
+                state = GameState::Draw;
+            }
+        }
+    }
+
+    void undoRealMove() {
+        if (moveHistory.empty()) return;
+        Move m = moveHistory.back();
+        moveHistory.pop_back();
+        
+        if (m.isPromotion) {
+            auto it = std::find(capturedPieces.begin(), capturedPieces.end(), board[m.toRow][m.toCol]);
+            if (it != capturedPieces.end()) capturedPieces.erase(it);
+        }
+        
+        undoMove(m);
+        
+        if (m.capturedPiece) {
+            auto it = std::find(capturedPieces.begin(), capturedPieces.end(), m.capturedPiece);
+            if (it != capturedPieces.end()) capturedPieces.erase(it);
+        }
+        
+        state = GameState::Ongoing;
+    }
+
+    vector<Move> generateAllLegalMoves(PieceColor color) {
+        vector<Move> moves;
+        for (int r = 0; r < 8; r++) {
+            for (int c = 0; c < 8; c++) {
+                Piece* p = board[r][c];
+                if (p != nullptr && p->color == color) {
+                    
+                    // Normal moves
+                    for (int tr = 0; tr < 8; tr++) {
+                        for (int tc = 0; tc < 8; tc++) {
+                            if (board[tr][tc] != nullptr && board[tr][tc]->color == color) continue;
+                            
+                            if (p->symbol == 'P' || p->symbol == 'p') {
+                                int dir = (color == PieceColor::White) ? -1 : 1;
+                                if (tc == c && tr == r + dir && board[tr][tc] == nullptr) {
+                                    // Forward 1
+                                    Move m(r, c, tr, tc);
+                                    if (tr == 0 || tr == 7) m.isPromotion = true;
+                                    moves.push_back(m);
+                                } else if (tc == c && r == ((color == PieceColor::White) ? 6 : 1) && tr == r + 2*dir && board[r+dir][tc] == nullptr && board[tr][tc] == nullptr) {
+                                    // Forward 2
+                                    moves.push_back(Move(r, c, tr, tc));
+                                } else if (abs(tc - c) == 1 && tr == r + dir && board[tr][tc] != nullptr && board[tr][tc]->color != color) {
+                                    // Capture
+                                    Move m(r, c, tr, tc);
+                                    if (tr == 0 || tr == 7) m.isPromotion = true;
+                                    moves.push_back(m);
+                                } else if (!moveHistory.empty() && abs(tc - c) == 1 && tr == r + dir) {
+                                    // En Passant
+                                    const Move& lm = moveHistory.back();
+                                    if (lm.toRow == r && lm.toCol == tc && lm.fromRow == r + 2*dir) {
+                                        Piece* epTarget = board[lm.toRow][lm.toCol];
+                                        if (epTarget && (epTarget->symbol == 'P' || epTarget->symbol == 'p')) {
+                                            Move m(r, c, tr, tc);
+                                            m.isEnPassant = true;
+                                            moves.push_back(m);
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            
+                            if (p->isValidMove(r, c, tr, tc, board)) {
+                                moves.push_back(Move(r, c, tr, tc));
+                            }
+                        }
+                    }
+                    
+                    // Castling
+                    if ((p->symbol == 'K' || p->symbol == 'k') && !p->hasMoved && !isInCheck(color)) {
+                        PieceColor enemy = (color == PieceColor::White) ? PieceColor::Black : PieceColor::White;
+                        // Kingside
+                        if (board[r][7] != nullptr && (board[r][7]->symbol == 'R' || board[r][7]->symbol == 'r') && !board[r][7]->hasMoved) {
+                            if (board[r][5] == nullptr && board[r][6] == nullptr) {
+                                if (!isSquareAttacked(r, 5, enemy) && !isSquareAttacked(r, 6, enemy)) {
+                                    Move m(r, c, r, c + 2);
+                                    m.isCastling = true;
+                                    m.rookFromRow = r; m.rookFromCol = 7;
+                                    m.rookToRow = r; m.rookToCol = 5;
+                                    moves.push_back(m);
+                                }
+                            }
+                        }
+                        // Queenside
+                        if (board[r][0] != nullptr && (board[r][0]->symbol == 'R' || board[r][0]->symbol == 'r') && !board[r][0]->hasMoved) {
+                            if (board[r][1] == nullptr && board[r][2] == nullptr && board[r][3] == nullptr) {
+                                if (!isSquareAttacked(r, 2, enemy) && !isSquareAttacked(r, 3, enemy)) {
+                                    Move m(r, c, r, c - 2);
+                                    m.isCastling = true;
+                                    m.rookFromRow = r; m.rookFromCol = 0;
+                                    m.rookToRow = r; m.rookToCol = 3;
+                                    moves.push_back(m);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        vector<Move> validMoves;
+        for (Move& m : moves) {
+            if (m.isPromotion) {
+                char proms[] = {'Q', 'R', 'B', 'N'};
+                for (char prm : proms) {
+                    Move pm = m;
+                    pm.promotionChar = prm;
+                    makeMove(pm);
+                    if (!isInCheck(color)) validMoves.push_back(pm);
+                    undoMove(pm);
+                }
+            } else {
+                makeMove(m);
+                if (!isInCheck(color)) validMoves.push_back(m);
+                undoMove(m);
+            }
+        }
+        
+        std::sort(validMoves.begin(), validMoves.end(), [this](const Move& a, const Move& b) {
+            int scoreA = (board[a.toRow][a.toCol] != nullptr) ? 1 : 0;
+            int scoreB = (board[b.toRow][b.toCol] != nullptr) ? 1 : 0;
+            if (a.isPromotion) scoreA += 5;
+            if (b.isPromotion) scoreB += 5;
+            return scoreA > scoreB;
+        });
+        
+        return validMoves;
+    }
+
+    const int centerControl[8][8] = {
+        { -2, -1, -1, -1, -1, -1, -1, -2 },
+        { -1,  0,  0,  0,  0,  0,  0, -1 },
+        { -1,  0,  1,  1,  1,  1,  0, -1 },
+        { -1,  0,  1,  2,  2,  1,  0, -1 },
+        { -1,  0,  1,  2,  2,  1,  0, -1 },
+        { -1,  0,  1,  1,  1,  1,  0, -1 },
+        { -1,  0,  0,  0,  0,  0,  0, -1 },
+        { -2, -1, -1, -1, -1, -1, -1, -2 }
+    };
+
+    int evaluateBoard() {
+        int score = 0;
+        for (int r = 0; r < 8; r++) {
+            for (int c = 0; c < 8; c++) {
+                Piece* p = board[r][c];
+                if (p != nullptr) {
+                    int val = 0;
+                    if (p->symbol == 'P' || p->symbol == 'p') {
+                        val = 100;
+                        if (p->color == PieceColor::White) val += (7 - r) * 2; 
+                        else val += r * 2; 
+                    }
+                    else if (p->symbol == 'N' || p->symbol == 'n') val = 300 + centerControl[r][c] * 10;
+                    else if (p->symbol == 'B' || p->symbol == 'b') val = 300 + centerControl[r][c] * 5;
+                    else if (p->symbol == 'R' || p->symbol == 'r') val = 500;
+                    else if (p->symbol == 'Q' || p->symbol == 'q') val = 900;
+                    else if (p->symbol == 'K' || p->symbol == 'k') val = 9000;
+                    
+                    if (p->color == PieceColor::White) score += val;
+                    else score -= val;
+                }
+            }
+        }
+        return score;
+    }
+
+    int minimax(int depth, int alpha, int beta, bool isMaximizing) {
+        if (depth == 0) return evaluateBoard();
+        PieceColor currentColor = isMaximizing ? PieceColor::White : PieceColor::Black;
+        vector<Move> legalMoves = generateAllLegalMoves(currentColor);
+        if (legalMoves.empty()) {
+            if (isInCheck(currentColor)) return isMaximizing ? -9999 : 9999;
+            else return 0;
+        }
+
+        if (isMaximizing) {
+            int maxEval = -99999;
+            for (Move& move : legalMoves) {
+                makeMove(move);
+                int eval = minimax(depth - 1, alpha, beta, false);
+                undoMove(move);
+                maxEval = max(maxEval, eval);
+                alpha = max(alpha, eval);
+                if (beta <= alpha) break; 
+            }
+            return maxEval;
+        } else {
+            int minEval = 99999;
+            for (Move& move : legalMoves) {
+                makeMove(move);
+                int eval = minimax(depth - 1, alpha, beta, true);
+                undoMove(move);
+                minEval = min(minEval, eval);
+                beta = min(beta, eval);
+                if (beta <= alpha) break; 
+            }
+            return minEval;
+        }
+    }
+
+    Move getBestMove(int depth, PieceColor aiColor) {
+        vector<Move> legalMoves = generateAllLegalMoves(aiColor);
+        if (legalMoves.empty()) return Move(0,0,0,0); 
+        Move bestMove = legalMoves[0];
+        if (aiColor == PieceColor::White) {
+            int bestVal = -99999;
+            for (Move& move : legalMoves) {
+                makeMove(move);
+                int moveVal = minimax(depth - 1, -99999, 99999, false);
+                undoMove(move);
+                if (moveVal > bestVal) {
+                    bestVal = moveVal;
+                    bestMove = move;
+                }
+            }
+        } else {
+            int bestVal = 99999;
+            for (Move& move : legalMoves) {
+                makeMove(move);
+                int moveVal = minimax(depth - 1, -99999, 99999, true);
+                undoMove(move);
+                if (moveVal < bestVal) {
+                    bestVal = moveVal;
+                    bestMove = move;
+                }
+            }
+        }
+        return bestMove;
+    }
+    
+    Move* attemptHumanMove(int fromRow, int fromCol, int toRow, int toCol, char promotionChar = 'Q') {
+        if (state != GameState::Ongoing) return nullptr;
+        vector<Move> moves = generateAllLegalMoves(whiteTurn ? PieceColor::White : PieceColor::Black);
+        for (Move& m : moves) {
+            if (m.fromRow == fromRow && m.fromCol == fromCol && m.toRow == toRow && m.toCol == toCol) {
+                if (m.isPromotion) {
+                    if (m.promotionChar == promotionChar) {
+                        return new Move(m);
+                    }
+                } else {
+                    return new Move(m);
+                }
+            }
+        }
+        return nullptr;
+    }
+};
+
+// --- GUI Implementation using Raylib ---
+
+int main() {
+    const int screenWidth = 800;
+    const int screenHeight = 850;
+    const int tileSize = 100;
+
+    InitWindow(screenWidth, screenHeight, "AI Chess - C++ GUI");
+    SetTargetFPS(60);
+    
+    Texture2D texWK = LoadTexture("assets/wk.png");
+    Texture2D texWQ = LoadTexture("assets/wq.png");
+    Texture2D texWR = LoadTexture("assets/wr.png");
+    Texture2D texWB = LoadTexture("assets/wb.png");
+    Texture2D texWN = LoadTexture("assets/wn.png");
+    Texture2D texWP = LoadTexture("assets/wp.png");
+    Texture2D texBK = LoadTexture("assets/bk.png");
+    Texture2D texBQ = LoadTexture("assets/bq.png");
+    Texture2D texBR = LoadTexture("assets/br.png");
+    Texture2D texBB = LoadTexture("assets/bb.png");
+    Texture2D texBN = LoadTexture("assets/bn.png");
+    Texture2D texBP = LoadTexture("assets/bp.png");
+
+    ChessBoard game;
+    int aiDepth = 4; // Using depth 4 for decent play
+    
+    int selectedRow = -1;
+    int selectedCol = -1;
+    
+    bool aiThinking = false;
+    
+    bool awaitingPromotion = false;
+    int promFromRow, promFromCol, promToRow, promToCol;
+    
+    Color darkSquare = { 181, 136, 99, 255 }; // Walnut Wood
+    Color lightSquare = { 240, 217, 181, 255 }; // Maple Wood
+    Color highlightColor = { 205, 210, 106, 200 }; // Yellow-green highlight
+    Color selectedColor = { 205, 210, 106, 255 }; // Solid highlight for selected
+
+    auto drawPiece = [&](Piece* p, int r, int c) {
+        Texture2D tex = texWK; 
+        if (p->color == PieceColor::White) {
+            if (p->symbol == 'K') tex = texWK;
+            else if (p->symbol == 'Q') tex = texWQ;
+            else if (p->symbol == 'R') tex = texWR;
+            else if (p->symbol == 'B') tex = texWB;
+            else if (p->symbol == 'N') tex = texWN;
+            else if (p->symbol == 'P' || p->symbol == 'p') tex = texWP;
+        } else {
+            if (p->symbol == 'K' || p->symbol == 'k') tex = texBK;
+            else if (p->symbol == 'Q' || p->symbol == 'q') tex = texBQ;
+            else if (p->symbol == 'R' || p->symbol == 'r') tex = texBR;
+            else if (p->symbol == 'B' || p->symbol == 'b') tex = texBB;
+            else if (p->symbol == 'N' || p->symbol == 'n') tex = texBN;
+            else if (p->symbol == 'P' || p->symbol == 'p') tex = texBP;
+        }
+        float scale = (float)tileSize / tex.width;
+        Vector2 pos = {(float)c * tileSize, (float)r * tileSize};
+        DrawTextureEx(tex, pos, 0.0f, scale, WHITE);
+    };
+
+    while (!WindowShouldClose()) {
+        
+        // AI Turn Logic
+        if (game.state == GameState::Ongoing && !game.whiteTurn && !aiThinking && !awaitingPromotion) {
+            aiThinking = true;
+        }
+
+        if (aiThinking) {
+            BeginDrawing();
+            ClearBackground(RAYWHITE);
+            for (int r = 0; r < 8; r++) {
+                for (int c = 0; c < 8; c++) {
+                    Color tileColor = ((r + c) % 2 == 0) ? lightSquare : darkSquare;
+                    DrawRectangle(c * tileSize, r * tileSize, tileSize, tileSize, tileColor);
+                    Piece* p = game.board[r][c];
+                    if (p != nullptr) drawPiece(p, r, c);
+                }
+            }
+            DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.3f));
+            DrawText("AI is thinking...", screenWidth/2 - 120, screenHeight/2 - 20, 30, WHITE);
+            EndDrawing();
+            
+            Move aiMove = game.getBestMove(aiDepth, PieceColor::Black);
+            game.executeRealMove(aiMove);
+            aiThinking = false;
+        }
+
+        // Undo Button Logic
+        if (!aiThinking && !awaitingPromotion) {
+            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                Vector2 mousePos = GetMousePosition();
+                if (mousePos.y >= 800 && mousePos.y <= 850 && mousePos.x >= 0 && mousePos.x <= 200) {
+                    if (game.moveHistory.size() >= 2) {
+                        game.undoRealMove();
+                        game.undoRealMove();
+                        selectedRow = -1; selectedCol = -1;
+                    } else if (game.moveHistory.size() == 1) {
+                        game.undoRealMove();
+                        selectedRow = -1; selectedCol = -1;
+                    }
+                }
+            }
+        }
+
+        // Human Turn Logic
+        if (game.state == GameState::Ongoing && game.whiteTurn && !aiThinking) {
+            if (awaitingPromotion) {
+                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                    Vector2 mousePos = GetMousePosition();
+                    // Draw promotion UI at center
+                    int uiX = screenWidth/2 - 200;
+                    int uiY = screenHeight/2 - 50;
+                    if (mousePos.y >= uiY && mousePos.y <= uiY + 100) {
+                        char choice = ' ';
+                        if (mousePos.x >= uiX && mousePos.x < uiX + 100) choice = 'Q';
+                        else if (mousePos.x >= uiX + 100 && mousePos.x < uiX + 200) choice = 'R';
+                        else if (mousePos.x >= uiX + 200 && mousePos.x < uiX + 300) choice = 'B';
+                        else if (mousePos.x >= uiX + 300 && mousePos.x < uiX + 400) choice = 'N';
+                        
+                        if (choice != ' ') {
+                            Move* hm = game.attemptHumanMove(promFromRow, promFromCol, promToRow, promToCol, choice);
+                            if (hm) {
+                                game.executeRealMove(*hm);
+                                delete hm;
+                            }
+                            awaitingPromotion = false;
+                        }
+                    }
+                }
+            } else {
+                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                    Vector2 mousePos = GetMousePosition();
+                    int col = mousePos.x / tileSize;
+                    int row = mousePos.y / tileSize;
+                    
+                    if (selectedRow == -1 && selectedCol == -1) {
+                        if (game.board[row][col] != nullptr && game.board[row][col]->color == PieceColor::White) {
+                            selectedRow = row;
+                            selectedCol = col;
+                        }
+                    } else {
+                        if (selectedRow == row && selectedCol == col) {
+                            selectedRow = -1;
+                            selectedCol = -1;
+                        } else {
+                            // First, let's just see if this move exists for ANY promotion char (or none)
+                            // We generate legal moves and check
+                            vector<Move> validMoves = game.generateAllLegalMoves(PieceColor::White);
+                            bool isPromoMove = false;
+                            bool foundMove = false;
+                            for (Move& m : validMoves) {
+                                if (m.fromRow == selectedRow && m.fromCol == selectedCol && m.toRow == row && m.toCol == col) {
+                                    foundMove = true;
+                                    if (m.isPromotion) isPromoMove = true;
+                                    break;
+                                }
+                            }
+
+                            if (foundMove) {
+                                if (isPromoMove) {
+                                    awaitingPromotion = true;
+                                    promFromRow = selectedRow; promFromCol = selectedCol;
+                                    promToRow = row; promToCol = col;
+                                } else {
+                                    Move* hm = game.attemptHumanMove(selectedRow, selectedCol, row, col);
+                                    if (hm) {
+                                        game.executeRealMove(*hm);
+                                        delete hm;
+                                    }
+                                }
+                                selectedRow = -1;
+                                selectedCol = -1;
+                            } else {
+                                if (game.board[row][col] != nullptr && game.board[row][col]->color == PieceColor::White) {
+                                    selectedRow = row;
+                                    selectedCol = col;
+                                } else {
+                                    selectedRow = -1;
+                                    selectedCol = -1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Render
+        if (!aiThinking) {
+            BeginDrawing();
+            ClearBackground(RAYWHITE);
+
+            for (int r = 0; r < 8; r++) {
+                for (int c = 0; c < 8; c++) {
+                    Color tileColor = ((r + c) % 2 == 0) ? lightSquare : darkSquare;
+                    DrawRectangle(c * tileSize, r * tileSize, tileSize, tileSize, tileColor);
+                    
+                    if (r == selectedRow && c == selectedCol) {
+                        DrawRectangle(c * tileSize, r * tileSize, tileSize, tileSize, selectedColor);
+                    }
+                    
+                    Piece* p = game.board[r][c];
+                    if (p != nullptr) drawPiece(p, r, c);
+                }
+            }
+            
+            // Draw last move highlight (optional but nice)
+            if (!game.moveHistory.empty()) {
+                DrawRectangleLines(game.moveHistory.back().fromCol * tileSize, game.moveHistory.back().fromRow * tileSize, tileSize, tileSize, highlightColor);
+                DrawRectangleLines(game.moveHistory.back().toCol * tileSize, game.moveHistory.back().toRow * tileSize, tileSize, tileSize, highlightColor);
+            }
+            
+            // Draw Undo Button
+            DrawRectangle(0, 800, 200, 50, LIGHTGRAY);
+            DrawRectangleLines(0, 800, 200, 50, DARKGRAY);
+            DrawText("UNDO", 65, 815, 20, BLACK);
+
+            if (awaitingPromotion) {
+                DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.5f));
+                int uiX = screenWidth/2 - 200;
+                int uiY = screenHeight/2 - 50;
+                DrawRectangle(uiX, uiY, 400, 100, RAYWHITE);
+                DrawRectangleLines(uiX, uiY, 400, 100, BLACK);
+                
+                float scale = 100.0f / texWQ.width;
+                DrawTextureEx(texWQ, {(float)uiX, (float)uiY}, 0.0f, scale, WHITE);
+                DrawTextureEx(texWR, {(float)uiX + 100, (float)uiY}, 0.0f, scale, WHITE);
+                DrawTextureEx(texWB, {(float)uiX + 200, (float)uiY}, 0.0f, scale, WHITE);
+                DrawTextureEx(texWN, {(float)uiX + 300, (float)uiY}, 0.0f, scale, WHITE);
+            }
+
+            if (game.state != GameState::Ongoing) {
+                DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.6f));
+                const char* msg = "";
+                if (game.state == GameState::WhiteWins) msg = "Checkmate! White Wins!";
+                else if (game.state == GameState::BlackWins) msg = "Checkmate! Black Wins!";
+                else if (game.state == GameState::Draw) msg = "Stalemate! It's a Draw!";
+                
+                int len = MeasureText(msg, 40);
+                DrawText(msg, screenWidth/2 - len/2, screenHeight/2 - 20, 40, WHITE);
+            }
+
+            EndDrawing();
+        }
+    }
+    
+    UnloadTexture(texWK); UnloadTexture(texWQ); UnloadTexture(texWR); 
+    UnloadTexture(texWB); UnloadTexture(texWN); UnloadTexture(texWP);
+    UnloadTexture(texBK); UnloadTexture(texBQ); UnloadTexture(texBR); 
+    UnloadTexture(texBB); UnloadTexture(texBN); UnloadTexture(texBP);
+
+    CloseWindow();
+    return 0;
+}
