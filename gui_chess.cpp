@@ -139,17 +139,18 @@ public:
     }
 };
 
+
 enum class GameState { Ongoing, WhiteWins, BlackWins, Draw };
 
 class ChessBoard {
 public:
-    Piece* board[8][8];
-    bool whiteTurn;
+    Piece* board[8][8]; //  This is the literal chessboard in the computer's memory! It is a 2D grid. Because it holds pointers (Piece*), a square can either point to a piece (like a Knight) or be a nullptr (which means the square is completely empty).
+    bool whiteTurn; // A simple true/false toggle. If true, White plays. If false, Black plays.
     GameState state;
     vector<Move> moveHistory;
-    vector<Piece*> capturedPieces;
+    vector<Piece*> capturedPieces; // When a piece is captured, it is removed from the board[8][8] grid and placed in this vector or list.
 
-    ChessBoard() {
+    ChessBoard() {  //A Constructor is the code that automatically runs the exact moment a ChessBoard is created. First, it sweeps the entire 8x8 board and sets every single square to nullptr (empty).
         for (int i = 0; i < 8; ++i)
             for (int j = 0; j < 8; ++j)
                 board[i][j] = nullptr;
@@ -170,14 +171,14 @@ public:
         state = GameState::Ongoing;
     }
 
-    ~ChessBoard() {
-        for (int i = 0; i < 8; ++i)
+    ~ChessBoard() {   // It automatically runs right before the ChessBoard is destroyed (like when you click the "X" to close the game window).In C++, because you used the keyword new to create the pieces, you are completely responsible for deleting them, otherwise your computer will run out of RAM (a Memory Leak).
+        for (int i = 0; i < 8; ++i) // these two for loops scans the board and deletes every piece that survived the game.
             for (int j = 0; j < 8; ++j)
                 if (board[i][j] != nullptr) delete board[i][j];
-        for (Piece* p : capturedPieces) delete p;
+        for (Piece* p : capturedPieces) delete p;  // this loop scans the capturedPieces and deletes every piece that died during the game. This ensures your game perfectly cleans up its memory before closing!
     }
 
-    bool isSquareAttacked(int r, int c, PieceColor attackerColor) {
+    bool isSquareAttacked(int r, int c, PieceColor attackerColor) {  //It scans the entire board to see if any enemy piece can legally capture whatever is standing on a specific square (r, c).The game uses this primarily to check if a King is in Check, or if a King is trying to walk into danger!
         for (int i = 0; i < 8; ++i) {
             for (int j = 0; j < 8; ++j) {
                 Piece* p = board[i][j];
@@ -191,10 +192,10 @@ public:
                 }
             }
         }
-        return false;
+        return false;  // means this square is safe from enemy attacks. The King can safely walk here without being captured.
     }
 
-    bool isInCheck(PieceColor kingColor) {
+    bool isInCheck(PieceColor kingColor) {   // function scans the board to find a player's King, and then checks if any enemy pieces are currently in a position to capture it. If the King is under attack, it returns true (check); if it is safe, it returns false.
         int kingRow = -1, kingCol = -1;
         for (int i = 0; i < 8; ++i) {
             for (int j = 0; j < 8; ++j) {
@@ -436,7 +437,13 @@ public:
     };
 
     int evaluateBoard() {
+        int whiteMaterial = 0;
+        int blackMaterial = 0;
+        int whiteKingRow = -1, whiteKingCol = -1;
+        int blackKingRow = -1, blackKingCol = -1;
+        
         int score = 0;
+        
         for (int r = 0; r < 8; r++) {
             for (int c = 0; c < 8; c++) {
                 Piece* p = board[r][c];
@@ -447,17 +454,54 @@ public:
                         if (p->color == PieceColor::White) val += (7 - r) * 2; 
                         else val += r * 2; 
                     }
-                    else if (p->symbol == 'N' || p->symbol == 'n') val = 300 + centerControl[r][c] * 10;
-                    else if (p->symbol == 'B' || p->symbol == 'b') val = 300 + centerControl[r][c] * 5;
-                    else if (p->symbol == 'R' || p->symbol == 'r') val = 500;
-                    else if (p->symbol == 'Q' || p->symbol == 'q') val = 900;
-                    else if (p->symbol == 'K' || p->symbol == 'k') val = 9000;
+                    else if (p->symbol == 'N' || p->symbol == 'n') { val = 300 + centerControl[r][c] * 10; if(p->color == PieceColor::White) whiteMaterial += 300; else blackMaterial += 300; }
+                    else if (p->symbol == 'B' || p->symbol == 'b') { val = 300 + centerControl[r][c] * 5; if(p->color == PieceColor::White) whiteMaterial += 300; else blackMaterial += 300; }
+                    else if (p->symbol == 'R' || p->symbol == 'r') { val = 500; if(p->color == PieceColor::White) whiteMaterial += 500; else blackMaterial += 500; }
+                    else if (p->symbol == 'Q' || p->symbol == 'q') { val = 900; if(p->color == PieceColor::White) whiteMaterial += 900; else blackMaterial += 900; }
+                    else if (p->symbol == 'K' || p->symbol == 'k') { 
+                        val = 9000; 
+                        if (p->color == PieceColor::White) { whiteKingRow = r; whiteKingCol = c; }
+                        else { blackKingRow = r; blackKingCol = c; }
+                    }
                     
                     if (p->color == PieceColor::White) score += val;
                     else score -= val;
                 }
             }
         }
+        
+        // Endgame Heuristics
+        // If material is low OR one side has a huge advantage, hunt the opponent's king!
+        int totalMaterial = whiteMaterial + blackMaterial;
+        if (totalMaterial < 1500 || abs(score) > 600) {
+            int endgameScore = 0;
+            
+            // Function to evaluate king being pushed to edge
+            auto kingEdgeScore = [](int r, int c) {
+                int distCenterR = std::max(3 - r, r - 4);
+                int distCenterC = std::max(3 - c, c - 4);
+                return (distCenterR + distCenterC) * 10;
+            };
+            
+            // Function to evaluate distance between kings
+            auto kingDistScore = [](int wr, int wc, int br, int bc) {
+                return (abs(wr - br) + abs(wc - bc)) * 5; 
+            };
+            
+            if (score > 600) { 
+                // White is winning, drive black king to edge
+                endgameScore += kingEdgeScore(blackKingRow, blackKingCol);
+                endgameScore -= kingDistScore(whiteKingRow, whiteKingCol, blackKingRow, blackKingCol);
+            } else if (score < -600) {
+                // Black is winning, drive white king to edge
+                endgameScore -= kingEdgeScore(whiteKingRow, whiteKingCol);
+                endgameScore += kingDistScore(whiteKingRow, whiteKingCol, blackKingRow, blackKingCol);
+            }
+            
+            // Weight the endgame score based on advantage, so it kicks in fully when up a lot of material
+            score += endgameScore;
+        }
+        
         return score;
     }
 
