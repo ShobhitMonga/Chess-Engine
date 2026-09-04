@@ -28,7 +28,7 @@ jobs:
       - name: Compile Game
         run: |
           mkdir public
-          emcc gui_chess.cpp -o public/index.html -Os -Wall raylib-5.0_webassembly/lib/libraylib.a -I raylib-5.0_webassembly/include -I include -s USE_GLFW=3 -s ASYNCIFY -DPLATFORM_WEB --preload-file assets
+          em++ gui_chess.cpp -o public/index.html -Os -Wall raylib-5.0_webassembly/lib/libraylib.a -I raylib-5.0_webassembly/include -I include -s USE_GLFW=3 -s ASYNCIFY -DPLATFORM_WEB --preload-file assets
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
