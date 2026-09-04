@@ -24,14 +24,15 @@ jobs:
         run: |
           wget https://github.com/raysan5/raylib/releases/download/5.0/raylib-5.0_webassembly.zip
           unzip raylib-5.0_webassembly.zip
-          # Download Raylib's official clean web template
           wget https://raw.githubusercontent.com/raysan5/raylib/master/src/minshell.html
           
       - name: Compile Game
         run: |
           mkdir public
-          # Added --shell-file minshell.html to the command
           em++ gui_chess.cpp -o public/index.html -Os -Wall raylib-5.0_webassembly/lib/libraylib.a -I raylib-5.0_webassembly/include -I include -s USE_GLFW=3 -s ASYNCIFY -DPLATFORM_WEB --shell-file minshell.html --preload-file assets
+          
+          # Center the game and add a premium dark background with a shadow
+          echo "<style>body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #1a1a1a; } canvas { box-shadow: 0 15px 50px rgba(0,0,0,0.8); border-radius: 8px; }</style>" >> public/index.html
           
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
