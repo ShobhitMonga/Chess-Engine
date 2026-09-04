@@ -20,16 +20,19 @@ jobs:
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
 
-      - name: Download Raylib
+      - name: Download Raylib and Minimal Shell
         run: |
           wget https://github.com/raysan5/raylib/releases/download/5.0/raylib-5.0_webassembly.zip
           unzip raylib-5.0_webassembly.zip
-
+          # Download Raylib's official clean web template
+          wget https://raw.githubusercontent.com/raysan5/raylib/master/src/minshell.html
+          
       - name: Compile Game
         run: |
           mkdir public
-          em++ gui_chess.cpp -o public/index.html -Os -Wall raylib-5.0_webassembly/lib/libraylib.a -I raylib-5.0_webassembly/include -I include -s USE_GLFW=3 -s ASYNCIFY -DPLATFORM_WEB --preload-file assets
-
+          # Added --shell-file minshell.html to the command
+          em++ gui_chess.cpp -o public/index.html -Os -Wall raylib-5.0_webassembly/lib/libraylib.a -I raylib-5.0_webassembly/include -I include -s USE_GLFW=3 -s ASYNCIFY -DPLATFORM_WEB --shell-file minshell.html --preload-file assets
+          
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
